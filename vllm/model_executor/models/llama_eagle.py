@@ -163,6 +163,8 @@ class EagleLlamaForCausalLM(LlamaForCausalLM):
             name, loaded_weight = inputs
             if "lm_head" not in name:
                 name = "model." + name
+            if "lm_head" in name:
+                return
             return name, loaded_weight
 
         loader = AutoWeightsLoader(
