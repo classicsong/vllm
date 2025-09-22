@@ -843,7 +843,76 @@ class EagleProposer:
         # share lm_head with the target model if needed
         # some model definition do not define lm_head explicitly
         # and reuse embed_tokens for lm_head, e.g., CohereForCausalLM
-        if self.vllm_config.speculative_config.method != "eagle3" and \
+        import os
+
+        lm_head_path = "/opt/ml/speculative_model/Scout-17B-16E-Instruct-FP8-Dynamic-head/purefp8_quantized_lm_head_only.pt"
+        if lm_head_path:
+            logger.info(f"Loading separate LM head weights from: {lm_head_path}")
+            lm_head_state_dict = torch.load(lm_head_path, map_location="cpu")
+
+            # Check the data types in the loaded state dict
+            # for name, param in lm_head_state_dict.items():
+            #     logger.info(f"Loaded parameter '{name}': dtype={param.dtype}, shape={param.shape}")
+
+            # Get config from target model (different models store config differently)
+            if hasattr(target_model, 'config'):
+                model_config = target_model.config
+            elif hasattr(target_model, 'model_config'):
+                model_config = target_model.model_config
+            elif hasattr(target_model, 'hf_config'):
+                model_config = target_model.hf_config
+            else:
+                # Fallback to vllm_config
+                model_config = self.vllm_config.model_config.hf_config
+                logger.warning("Could not find model config, using vllm_config.model_config.hf_config")
+            # EAGLE model doesn't have lm_head - create one with custom FP8 config
+            from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
+            from vllm.model_executor.layers.quantization.fp8 import PureFp8Config
+
+            # Create custom FP8 config for pure FP8 weights without scales
+            pure_fp8_config = PureFp8Config()
+
+            model_config = model_config.get_text_config()
+            print(model_config)
+            self.model.lm_head = ParallelLMHead(
+                    model_config.vocab_size,
+                    model_config.hidden_size,
+                    params_dtype=torch.float8_e4m3fn,
+                    org_num_embeddings=model_config.vocab_size,
+                    quant_config=pure_fp8_config,  # Use custom FP8 config
+                    tp_size=1,
+                )
+
+            # Initialize CUDA graph buffers for TMA kernel capture
+            self.model.lm_head._tma_graphs = {}
+            self.model.lm_head._tma_inputs = {}
+            self.model.lm_head._tma_outputs = {}
+            self.model.lm_head._tma_weights = {}
+            self.model.lm_head.cudagraph_batch_sizes = [1, 2, 4, 8, 16]
+
+            with torch.no_grad():
+                self.model.lm_head.weight.data = self.model.lm_head.weight.data.to(torch.float8_e4m3fn)
+
+            # self.model.lm_head.load_state_dict(lm_head_state_dict, strict=False)
+            self.model.lm_head.weight_loader(self.model.lm_head.weight, lm_head_state_dict["weight"])
+
+            # Verify the weight is in FP8 format
+            logger.info(f"LM head weight dtype after loading: {self.model.lm_head.weight.dtype}")
+
+            # Move lm_head to the same device as the target model
+            device = next(target_model.parameters()).device
+            self.model.lm_head = self.model.lm_head.to(device)
+
+            logger.info(f"Successfully loaded separate LM head weights for EAGLE on device {device}.")
+
+            # Check the data type of loaded weights
+            logger.info(f"LM head weight dtype: {self.model.lm_head.weight.dtype}")
+            logger.info(f"LM head weight shape: {self.model.lm_head.weight.shape}")
+            if hasattr(self.model.lm_head, 'bias') and self.model.lm_head.bias is not None:
+                logger.info(f"LM head bias dtype: {self.model.lm_head.bias.dtype}")
+
+
+        elif self.vllm_config.speculative_config.method != "eagle3" and \
                 hasattr(target_language_model, "lm_head"):
             logger.info("Loading EAGLE LM head weights from the target model.")
             self.model.lm_head = target_language_model.lm_head
@@ -862,12 +931,20 @@ class EagleProposer:
                 input_ids = self.input_ids[:num_tokens]
                 inputs_embeds = None
 
-            self.model(
+            last_hidden_states, hidden_states = elf.model(
                 input_ids=input_ids,
                 positions=self.positions[:num_tokens],
                 hidden_states=self.hidden_states[:num_tokens],
                 inputs_embeds=inputs_embeds,
             )
+        print("Warming up lm_head in eagle head")
+        if last_hidden_states[:num_tokens].shape[0] > 8:
+            return
+        hidden_states = hidden_states[:num_tokens]
+        logits = self.model.compute_logits(last_hidden_states[:num_tokens],
+                                            None)
+
+
 
     def validate_same_kv_cache_group(self,
                                      kv_cache_config: KVCacheConfig) -> None:

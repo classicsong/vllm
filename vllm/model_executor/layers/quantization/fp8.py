@@ -69,6 +69,47 @@ def _is_col_major(x: torch.Tensor) -> bool:
     b, m, n = x.shape
     return x.stride(0) == m * n and x.stride(1) == 1 and x.stride(2) == m
 
+class PureFp8Config(QuantizationConfig):
+    """Custom FP8 config for pure FP8 weights without scales."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_checkpoint_fp8_serialized = True
+        self.activation_scheme = "none"  # No activation quantization
+        self.ignored_layers = []
+        self.weight_block_size = None
+        self.use_tma_kernel = True  # Flag to use TMA kernel
+
+    @classmethod
+    def get_name(cls) -> QuantizationMethods:
+        return "pure_fp8"
+
+    @classmethod
+    def get_supported_act_dtypes(cls) -> list[torch.dtype]:
+        return [torch.bfloat16, torch.half]
+
+    @classmethod
+    def get_min_capability(cls) -> int:
+        return 80
+
+    @classmethod
+    def get_config_filenames(cls) -> list[str]:
+        return []
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> "PureFp8Config":
+        """Create PureFp8Config from config dict - no additional config needed."""
+        return cls()
+
+    def get_quant_method(self, layer: torch.nn.Module,
+                         prefix: str) -> Optional["QuantizeMethodBase"]:
+        from vllm.attention.layer import Attention
+
+        if isinstance(layer, LinearBase):
+            return PureFp8LinearMethod(self)
+        return None
+
+
 
 class Fp8Config(QuantizationConfig):
     """Config class for FP8."""

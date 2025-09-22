@@ -204,6 +204,7 @@ class VocabParallelEmbedding(CustomOp):
         padding_size: padding size for the vocabulary.
         quant_config: quant config for the layer
         prefix: full name of the layer in the state dict
+        tp_size: tensor parallel size, if set, use the given value.
     """  # noqa: E501
 
     def __init__(self,
@@ -213,12 +214,14 @@ class VocabParallelEmbedding(CustomOp):
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+                 prefix: str = "",
+                 tp_size: int = None):
         super().__init__()
 
         # Keep the input dimensions.
         tp_rank = get_tensor_model_parallel_rank()
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_tensor_model_parallel_world_size() \
+            if tp_size is None else tp_size
         self.num_embeddings = num_embeddings
         self.padding_size = padding_size
         self.org_vocab_size = org_num_embeddings or num_embeddings
@@ -447,6 +450,7 @@ class ParallelLMHead(VocabParallelEmbedding):
         params_dtype: type of the parameters.
         org_num_embeddings: original vocabulary size (without LoRA).
         padding_size: padding size for the vocabulary.
+        tp_size: tensor parallel size, if set, use the given value.
     """
 
     def __init__(self,
@@ -457,10 +461,11 @@ class ParallelLMHead(VocabParallelEmbedding):
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+                 prefix: str = "",
+                 tp_size: int = None):
         super().__init__(num_embeddings, embedding_dim, params_dtype,
                          org_num_embeddings, padding_size, quant_config,
-                         prefix)
+                         prefix, tp_size)
         self.quant_config = quant_config
         if bias:
             self.bias = Parameter(
