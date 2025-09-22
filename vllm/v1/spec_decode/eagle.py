@@ -877,6 +877,7 @@ class EagleProposer:
             self.model.lm_head = ParallelLMHead(
                     model_config.vocab_size,
                     model_config.hidden_size,
+                    params_dtype=torch.float8_e4m3fn,
                     org_num_embeddings=model_config.vocab_size,
                     quant_config=pure_fp8_config,  # Use custom FP8 config
                     tp_size=1,
@@ -892,7 +893,8 @@ class EagleProposer:
             with torch.no_grad():
                 self.model.lm_head.weight.data = self.model.lm_head.weight.data.to(torch.float8_e4m3fn)
 
-            self.model.lm_head.load_state_dict(lm_head_state_dict, strict=False)
+            # self.model.lm_head.load_state_dict(lm_head_state_dict, strict=False)
+            self.model.lm_head.weight_loader(self.model.lm_head.weight, lm_head_state_dict["weight"])
 
             # Verify the weight is in FP8 format
             logger.info(f"LM head weight dtype after loading: {self.model.lm_head.weight.dtype}")
